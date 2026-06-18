@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>Go5x - 每回合5子围棋</title>
+<script src="https://cdn.jsdelivr.net/npm/wgo@2.3.1/wgo.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/wgo@2.3.1/kifu.min.js"></script>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: system-ui, sans-serif; background: #f5f0e6; display: flex; flex-direction: column; align-items: center; padding: 20px; }
+h1 { margin-bottom: 8px; color: #333; }
+#status { font-size: 20px; font-weight: bold; margin: 12px 0; padding: 8px 24px; border-radius: 6px; background: #fff; border: 2px solid #333; min-width: 260px; text-align: center; }
+#status.thinking { background: #fff3cd; border-color: #ffc107; }
+#board { cursor: pointer; }
+#board.disabled { pointer-events: none; opacity: 0.7; }
+#controls { margin-top: 12px; display: flex; gap: 10px; }
+button { padding: 8px 20px; font-size: 16px; cursor: pointer; border: 1px solid #999; border-radius: 4px; background: #fff; }
+button:hover { background: #eee; }
+#move-log { margin-top: 16px; max-width: 600px; font-size: 13px; color: #666; max-height: 120px; overflow-y: auto; }
+</style>
+</head>
+<body>
+<h1>Go5x</h1>
+<div id="status">请落子: 0 / 5</div>
+<div id="board"></div>
+<div id="controls">
+  <button onclick="undoLast()">撤回上一子</button>
+  <button onclick="resetGame()">重新开始</button>
+</div>
+<div id="move-log"></div>
+
+<script>
+const STONES_PER_TURN = 5;
+const BOARD_SIZE = 9;
+const API = 'http://localhost:8000';
+
+let board, currentMoves = [], gameActive = true, myTurn = true, turnNumber = 0;
+
+function init() {
+  document.getElementById('board').innerHTML = '';
+  board = new WGo.Board(document.getElementById('board'), {
+    size: BOARD_SIZE,
+    width: Math.min(560, window.innerWidth - 40),
+    section: { top: 0, right: 0, bottom: 0, left: 0 }
+  });
+  board.addEventListener('click', onBoardClick);
+  currentMoves = [];
+  gameActive = true;
+  myTurn = true;
+  turnNumber = 0;
+  updateStatus();
+}
+
+function onBoardClick(x, y) {
+  if (!gameActive || !myTurn) return;
+  if (x < 0 || x >= BOARD_SIZE || y < 0 || y >= BOARD_SIZE) return;
+
+  if (currentMoves.some(m => m.x === x && m.y === y)) return;
+  if (board.obj_arr[x][y].length > 0) return;
+
+  board.addObject({ x, y, type: WGo.B });
+  currentMoves.push({ x, y });
+  updateStatus();
+
+  if (currentMoves.length === STONES_PER_TURN) {
+    submitMoves();
+  }
+}
+
+function undoLast() {
+  if (!myTurn || currentMoves.length === 0) return;
+  const last = currentMoves.pop();
+  board.removeObjectsAt(last.x, last.y);
+  updateStatus();
+}
+
+function updateStatus(msg) {
+  const el = document.getElementById('status');
+  el.className = '';
+  if (msg) {
+    el.textContent = msg;
+    if (msg.includes('思考')) el.className = 'thinking';
+  } else {
+    el.textContent = `请落子: ${currentMoves.length} / ${STONES_PER_TURN}`;
+  }
+}
+
+async function submitMoves() {
+  myTurn = false;
+  document.getElementById('board').classList.add('disabled');
+  updateStatus('AI 思考中...');
+  turnNumber++;
+
+  const coords = currentMoves.map(m => [m.x, m.y]);
+  currentMoves = [];
+
+  try {
+    const resp = await fetch(`${API}/play`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ moves: coords })
+    });
+    const data = await resp.json();
+
+    if (data.error) {
+      updateStatus('错误: ' + data.error);
+      return;
+    }
+
+    // render AI moves
+    for (const [x, y] of data.ai_moves) {
+      board.addObject({ x, y, type: WGo.W });
+    }
+
+    // handle captures
+    if (data.captures) {
+      for (const [x, y] of data.captures.black_captured || []) {
+        board.removeObjectsAt(x, y);
+      }
+      for (const [x, y] of data.captures.white_captured || []) {
+        board.removeObjectsAt(x, y);
+      }
+    }
+
+    logMoves(turnNumber, coords, data.ai_moves);
+    myTurn = true;
+    document.getElementById('board').classList.remove('disabled');
+    updateStatus();
+  } catch (e) {
+    updateStatus('连接失败，请确认后端已启动');
+    console.error(e);
+    myTurn = true;
+    document.getElementById('board').classList.remove('disabled');
+  }
+}
+
+function logMoves(turn, black, white) {
+  const el = document.getElementById('move-log');
+  const fmt = coords => coords.map(([x,y]) => `(${x},${y})`).join(' ');
+  el.innerHTML = `<div>第${turn}回合 黑: ${fmt(black)} | 白: ${fmt(white)}</div>` + el.innerHTML;
+}
+
+function resetGame() {
+  fetch(`${API}/reset`, { method: 'POST' }).catch(() => {});
+  init();
+}
+
+init();
+</script>
+</body>
+</html>
