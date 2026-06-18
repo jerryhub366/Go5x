@@ -106,20 +106,8 @@ async function submitMoves() {
       return;
     }
 
-    // render AI moves
-    for (const [x, y] of data.ai_moves) {
-      board.addObject({ x, y, c: WGo.W });
-    }
-
-    // handle captures
-    if (data.captures) {
-      for (const [x, y] of data.captures.black_captured || []) {
-        board.removeObjectsAt(x, y);
-      }
-      for (const [x, y] of data.captures.white_captured || []) {
-        board.removeObjectsAt(x, y);
-      }
-    }
+    // sync board from engine state (handles captures automatically)
+    syncBoard(data.board);
 
     logMoves(turnNumber, coords, data.ai_moves);
     myTurn = true;
@@ -130,6 +118,16 @@ async function submitMoves() {
     console.error(e);
     myTurn = true;
     document.getElementById('board').classList.remove('disabled');
+  }
+}
+
+function syncBoard(state) {
+  board.removeAllObjects();
+  for (const [x, y] of state.black) {
+    board.addObject({ x, y, c: WGo.B });
+  }
+  for (const [x, y] of state.white) {
+    board.addObject({ x, y, c: WGo.W });
   }
 }
 

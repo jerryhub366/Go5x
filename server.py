@@ -75,6 +75,25 @@ class Engine:
         row = int(resp[1:])
         return (col, BOARD_SIZE - row)
 
+    def get_board_state(self) -> dict[str, list[list[int]]]:
+        resp = self._send("showboard")
+        black, white = [], []
+        lines = resp.split("\n")
+        for line in lines:
+            line = line.strip()
+            if not line or not line[0].isdigit():
+                continue
+            parts = line.split()
+            row_num = int(parts[0])
+            y = BOARD_SIZE - row_num
+            for col_idx, ch in enumerate(parts[1:]):
+                ch = ch.rstrip("0123456789")
+                if ch == "X":
+                    black.append([col_idx, y])
+                elif ch == "O":
+                    white.append([col_idx, y])
+        return {"black": black, "white": white}
+
     def reset(self):
         self._send("clear_board")
 
@@ -113,7 +132,10 @@ def play(req: PlayRequest):
             if i < 4:
                 engine.play_pass("black")
 
-        return {"ai_moves": ai_moves}
+        return {
+            "ai_moves": ai_moves,
+            "board": engine.get_board_state(),
+        }
     except Exception as e:
         return {"error": str(e)}
 
