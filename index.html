@@ -3,8 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>Go5x - 每回合5子围棋</title>
-<script src="https://cdn.jsdelivr.net/npm/wgo@2.3.1/wgo.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/wgo@2.3.1/kifu.min.js"></script>
+<script src="wgo.js"></script>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body { font-family: system-ui, sans-serif; background: #f5f0e6; display: flex; flex-direction: column; align-items: center; padding: 20px; }
@@ -56,9 +55,9 @@ function onBoardClick(x, y) {
   if (x < 0 || x >= BOARD_SIZE || y < 0 || y >= BOARD_SIZE) return;
 
   if (currentMoves.some(m => m.x === x && m.y === y)) return;
-  if (board.obj_arr[x][y].length > 0) return;
+  if (board.obj_arr[x][y].some(o => o.c === WGo.B || o.c === WGo.W)) return;
 
-  board.addObject({ x, y, type: WGo.B });
+  board.addObject({ x, y, c: WGo.B });
   currentMoves.push({ x, y });
   updateStatus();
 
@@ -109,7 +108,7 @@ async function submitMoves() {
 
     // render AI moves
     for (const [x, y] of data.ai_moves) {
-      board.addObject({ x, y, type: WGo.W });
+      board.addObject({ x, y, c: WGo.W });
     }
 
     // handle captures
