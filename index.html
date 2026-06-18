@@ -10,6 +10,7 @@ body { font-family: system-ui, sans-serif; background: #f5f0e6; display: flex; f
 h1 { margin-bottom: 8px; color: #333; }
 #status { font-size: 20px; font-weight: bold; margin: 12px 0; padding: 8px 24px; border-radius: 6px; background: #fff; border: 2px solid #333; min-width: 260px; text-align: center; }
 #status.thinking { background: #fff3cd; border-color: #ffc107; }
+#status.error { background: #f8d7da; border-color: #dc3545; }
 #board { cursor: pointer; }
 #board.disabled { pointer-events: none; opacity: 0.7; }
 #controls { margin-top: 12px; display: flex; gap: 10px; }
@@ -39,8 +40,7 @@ function init() {
   document.getElementById('board').innerHTML = '';
   board = new WGo.Board(document.getElementById('board'), {
     size: BOARD_SIZE,
-    width: Math.min(560, window.innerWidth - 40),
-    section: { top: 0, right: 0, bottom: 0, left: 0 }
+    width: Math.min(560, window.innerWidth - 40)
   });
   board.addEventListener('click', onBoardClick);
   currentMoves = [];
@@ -73,12 +73,11 @@ function undoLast() {
   updateStatus();
 }
 
-function updateStatus(msg) {
+function updateStatus(msg, type) {
   const el = document.getElementById('status');
-  el.className = '';
+  el.className = type || '';
   if (msg) {
     el.textContent = msg;
-    if (msg.includes('思考')) el.className = 'thinking';
   } else {
     el.textContent = `请落子: ${currentMoves.length} / ${STONES_PER_TURN}`;
   }
@@ -87,7 +86,7 @@ function updateStatus(msg) {
 async function submitMoves() {
   myTurn = false;
   document.getElementById('board').classList.add('disabled');
-  updateStatus('AI 思考中...');
+  updateStatus('AI 思考中...', 'thinking');
   turnNumber++;
 
   const coords = currentMoves.map(m => [m.x, m.y]);
@@ -102,20 +101,26 @@ async function submitMoves() {
     const data = await resp.json();
 
     if (data.error) {
-      updateStatus('错误: ' + data.error);
+      // Sync board from engine to recover consistent state
+      if (data.board) syncBoard(data.board);
+      updateStatus('错误: ' + data.error, 'error');
+      myTurn = true;
+      document.getElementById('board').classList.remove('disabled');
       return;
     }
 
-    // sync board from engine state (handles captures automatically)
     syncBoard(data.board);
-
     logMoves(turnNumber, coords, data.ai_moves);
     myTurn = true;
     document.getElementById('board').classList.remove('disabled');
     updateStatus();
   } catch (e) {
-    updateStatus('连接失败，请确认后端已启动');
+    updateStatus('连接失败，请确认后端已启动', 'error');
     console.error(e);
+    // Undo the visual stones since they weren't sent to engine
+    for (const [x, y] of coords) {
+      board.removeObjectsAt(x, y);
+    }
     myTurn = true;
     document.getElementById('board').classList.remove('disabled');
   }
@@ -137,12 +142,17 @@ function logMoves(turn, black, white) {
   el.innerHTML = `<div>第${turn}回合 黑: ${fmt(black)} | 白: ${fmt(white)}</div>` + el.innerHTML;
 }
 
-function resetGame() {
-  fetch(`${API}/reset`, { method: 'POST' }).catch(() => {});
+async function resetGame() {
+  try { await fetch(`${API}/reset`, { method: 'POST' }); } catch(e) {}
+  document.getElementById('move-log').innerHTML = '';
   init();
 }
 
-init();
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', init);
+} else {
+  init();
+}
 </script>
 </body>
 </html>

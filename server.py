@@ -1,12 +1,10 @@
 """Go5x backend — FastAPI + KataGo via GTP protocol."""
 from __future__ import annotations
 import subprocess
-import sys
 import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 app = FastAPI()
@@ -59,10 +57,18 @@ class Engine:
             raise RuntimeError(f"GTP error: {resp}")
         return resp.lstrip("= ").strip()
 
-    def play(self, color: str, x: int, y: int):
+    def _try_send(self, cmd: str) -> tuple[bool, str]:
+        """Send command, return (success, response) without raising."""
+        try:
+            return True, self._send(cmd)
+        except RuntimeError as e:
+            return False, str(e)
+
+    def play(self, color: str, x: int, y: int) -> bool:
         col = GTP_COLS[x]
         row = BOARD_SIZE - y
-        self._send(f"play {color} {col}{row}")
+        ok, _ = self._try_send(f"play {color} {col}{row}")
+        return ok
 
     def play_pass(self, color: str):
         self._send(f"play {color} pass")
@@ -78,8 +84,7 @@ class Engine:
     def get_board_state(self) -> dict[str, list[list[int]]]:
         resp = self._send("showboard")
         black, white = [], []
-        lines = resp.split("\n")
-        for line in lines:
+        for line in resp.split("\n"):
             line = line.strip()
             if not line or not line[0].isdigit():
                 continue
@@ -93,6 +98,9 @@ class Engine:
                 elif ch == "O":
                     white.append([col_idx, y])
         return {"black": black, "white": white}
+
+    def undo(self):
+        self._try_send("undo")
 
     def reset(self):
         self._send("clear_board")
@@ -117,9 +125,17 @@ def play(req: PlayRequest):
         return {"error": "Engine not running. Install KataGo and restart."}
 
     try:
-        # 1. Play all human (black) stones
+        # 1. Play all human (black) stones, undo all on failure
+        played = 0
         for x, y in req.moves:
-            engine.play("black", x, y)
+            if not engine.play("black", x, y):
+                for _ in range(played):
+                    engine.undo()
+                return {
+                    "error": f"非法落子 ({x},{y})",
+                    "board": engine.get_board_state(),
+                }
+            played += 1
 
         # 2. Generate 5 AI (white) moves using pass trick
         ai_moves = []
@@ -128,7 +144,6 @@ def play(req: PlayRequest):
             if move is None:
                 break
             ai_moves.append(list(move))
-            # Feed a black pass so AI gets another white turn (except after last)
             if i < 4:
                 engine.play_pass("black")
 
@@ -137,7 +152,11 @@ def play(req: PlayRequest):
             "board": engine.get_board_state(),
         }
     except Exception as e:
-        return {"error": str(e)}
+        try:
+            board = engine.get_board_state()
+        except Exception:
+            board = None
+        return {"error": str(e), "board": board}
 
 
 @app.post("/reset")
