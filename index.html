@@ -2,6 +2,7 @@
 <html lang="zh">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Go5x - 每回合5子围棋</title>
 <script src="wgo.js"></script>
 <style>
@@ -32,10 +33,13 @@ button:hover { background: #eee; }
 <script>
 const STONES_PER_TURN = 5;
 const BOARD_SIZE = 9;
-const API = 'http://localhost:8000';
+const API = location.origin;
 
 let board, currentMoves = [], gameActive = true, myTurn = true, turnNumber = 0;
-let placing = false; // lock during async stone placement
+let placing = false;
+// Track last turn's moves for showing order labels
+let lastBlackMoves = []; // [{x,y}, ...]
+let lastWhiteMoves = []; // [{x,y}, ...]
 
 function init() {
   document.getElementById('board').innerHTML = '';
@@ -45,6 +49,8 @@ function init() {
   });
   board.addEventListener('click', onBoardClick);
   currentMoves = [];
+  lastBlackMoves = [];
+  lastWhiteMoves = [];
   gameActive = true;
   myTurn = true;
   turnNumber = 0;
@@ -62,6 +68,12 @@ function onBoardClick(x, y) {
 
 async function handlePlace(x, y) {
   placing = true;
+
+  // On first black stone of a new turn, clear white order labels
+  if (currentMoves.length === 0) {
+    clearOrderLabels();
+  }
+
   try {
     const resp = await fetch(`${API}/place`, {
       method: 'POST',
@@ -73,6 +85,7 @@ async function handlePlace(x, y) {
     if (data.error) {
       updateStatus('非法落子，请换一个位置', 'error');
       if (data.board) syncBoard(data.board);
+      reapplyBlackLabels();
       setTimeout(() => { if (myTurn) updateStatus(); }, 1500);
       placing = false;
       return;
@@ -80,6 +93,7 @@ async function handlePlace(x, y) {
 
     syncBoard(data.board);
     currentMoves.push({ x, y });
+    reapplyBlackLabels();
     updateStatus();
 
     if (currentMoves.length === STONES_PER_TURN) {
@@ -101,10 +115,15 @@ function undoLast() {
     .then(data => {
       if (data.board) syncBoard(data.board);
       else board.removeObjectsAt(last.x, last.y);
+      reapplyBlackLabels();
+      // If all undone, show white labels again
+      if (currentMoves.length === 0) reapplyWhiteLabels();
       updateStatus();
     })
     .catch(() => {
       board.removeObjectsAt(last.x, last.y);
+      reapplyBlackLabels();
+      if (currentMoves.length === 0) reapplyWhiteLabels();
       updateStatus();
     })
     .finally(() => { placing = false; });
@@ -123,6 +142,7 @@ function updateStatus(msg, type) {
 }
 
 async function requestAiTurn() {
+  lastBlackMoves = currentMoves.slice();
   const blackCoords = currentMoves.map(m => [m.x, m.y]);
   currentMoves = [];
   myTurn = false;
@@ -142,7 +162,11 @@ async function requestAiTurn() {
       return;
     }
 
-    syncBoard(data.board);
+    lastWhiteMoves = data.ai_moves.map(([x,y]) => ({x, y}));
+
+    // Animate AI moves one by one
+    await animateAiMoves(data.ai_moves, data.board);
+
     logMoves(turnNumber, blackCoords, data.ai_moves);
     myTurn = true;
     document.getElementById('board').classList.remove('disabled');
@@ -152,6 +176,64 @@ async function requestAiTurn() {
     console.error(e);
     myTurn = true;
     document.getElementById('board').classList.remove('disabled');
+  }
+}
+
+async function animateAiMoves(aiMoves, finalBoard) {
+  // Clear black order labels before showing AI moves
+  clearOrderLabels();
+
+  for (let i = 0; i < aiMoves.length; i++) {
+    const [x, y] = aiMoves[i];
+    await sleep(500);
+    board.addObject({ x, y, c: WGo.W });
+    board.addObject({ x, y, type: "LB", text: String(i + 1) });
+    updateStatus(`AI 落子: ${i + 1} / ${STONES_PER_TURN}`, 'thinking');
+  }
+
+  await sleep(600);
+
+  // Final sync to ensure captures are correct
+  syncBoard(finalBoard);
+  reapplyWhiteLabels();
+}
+
+// --- Order label helpers ---
+
+function clearOrderLabels() {
+  for (const m of lastWhiteMoves) {
+    removeLabelAt(m.x, m.y);
+  }
+  for (const m of lastBlackMoves) {
+    removeLabelAt(m.x, m.y);
+  }
+  for (const m of currentMoves) {
+    removeLabelAt(m.x, m.y);
+  }
+}
+
+function removeLabelAt(x, y) {
+  const objs = board.obj_arr[x][y];
+  for (let i = objs.length - 1; i >= 0; i--) {
+    if (objs[i].type === "LB") {
+      board.removeObject(objs[i]);
+    }
+  }
+}
+
+function reapplyBlackLabels() {
+  for (let i = 0; i < currentMoves.length; i++) {
+    const m = currentMoves[i];
+    removeLabelAt(m.x, m.y);
+    board.addObject({ x: m.x, y: m.y, type: "LB", text: String(i + 1) });
+  }
+}
+
+function reapplyWhiteLabels() {
+  for (let i = 0; i < lastWhiteMoves.length; i++) {
+    const m = lastWhiteMoves[i];
+    removeLabelAt(m.x, m.y);
+    board.addObject({ x: m.x, y: m.y, type: "LB", text: String(i + 1) });
   }
 }
 
@@ -170,6 +252,8 @@ function logMoves(turn, black, white) {
   const fmt = coords => coords.map(([x,y]) => `(${x},${y})`).join(' ');
   el.innerHTML = `<div>第${turn}回合 黑: ${fmt(black)} | 白: ${fmt(white)}</div>` + el.innerHTML;
 }
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 async function resetGame() {
   try { await fetch(`${API}/reset`, { method: 'POST' }); } catch(e) {}
