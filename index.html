@@ -35,6 +35,7 @@ const BOARD_SIZE = 9;
 const API = 'http://localhost:8000';
 
 let board, currentMoves = [], gameActive = true, myTurn = true, turnNumber = 0;
+let placing = false; // lock during async stone placement
 
 function init() {
   document.getElementById('board').innerHTML = '';
@@ -47,30 +48,66 @@ function init() {
   gameActive = true;
   myTurn = true;
   turnNumber = 0;
+  placing = false;
   updateStatus();
 }
 
 function onBoardClick(x, y) {
-  if (!gameActive || !myTurn) return;
+  if (!gameActive || !myTurn || placing) return;
   if (x < 0 || x >= BOARD_SIZE || y < 0 || y >= BOARD_SIZE) return;
-
   if (currentMoves.some(m => m.x === x && m.y === y)) return;
   if (board.obj_arr[x][y].some(o => o.c === WGo.B || o.c === WGo.W)) return;
+  handlePlace(x, y);
+}
 
-  board.addObject({ x, y, c: WGo.B });
-  currentMoves.push({ x, y });
-  updateStatus();
+async function handlePlace(x, y) {
+  placing = true;
+  try {
+    const resp = await fetch(`${API}/place`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ x, y })
+    });
+    const data = await resp.json();
 
-  if (currentMoves.length === STONES_PER_TURN) {
-    submitMoves();
+    if (data.error) {
+      updateStatus('非法落子，请换一个位置', 'error');
+      if (data.board) syncBoard(data.board);
+      setTimeout(() => { if (myTurn) updateStatus(); }, 1500);
+      placing = false;
+      return;
+    }
+
+    syncBoard(data.board);
+    currentMoves.push({ x, y });
+    updateStatus();
+
+    if (currentMoves.length === STONES_PER_TURN) {
+      await requestAiTurn();
+    }
+  } catch (e) {
+    updateStatus('连接失败，请确认后端已启动', 'error');
+    console.error(e);
   }
+  placing = false;
 }
 
 function undoLast() {
-  if (!myTurn || currentMoves.length === 0) return;
+  if (!myTurn || currentMoves.length === 0 || placing) return;
+  placing = true;
   const last = currentMoves.pop();
-  board.removeObjectsAt(last.x, last.y);
-  updateStatus();
+  fetch(`${API}/undo`, { method: 'POST' })
+    .then(r => r.json())
+    .then(data => {
+      if (data.board) syncBoard(data.board);
+      else board.removeObjectsAt(last.x, last.y);
+      updateStatus();
+    })
+    .catch(() => {
+      board.removeObjectsAt(last.x, last.y);
+      updateStatus();
+    })
+    .finally(() => { placing = false; });
 }
 
 function updateStatus(msg, type) {
@@ -79,48 +116,40 @@ function updateStatus(msg, type) {
   if (msg) {
     el.textContent = msg;
   } else {
-    el.textContent = `请落子: ${currentMoves.length} / ${STONES_PER_TURN}`;
+    el.textContent = myTurn
+      ? `请落子: ${currentMoves.length} / ${STONES_PER_TURN}`
+      : 'AI 思考中...';
   }
 }
 
-async function submitMoves() {
+async function requestAiTurn() {
+  const blackCoords = currentMoves.map(m => [m.x, m.y]);
+  currentMoves = [];
   myTurn = false;
   document.getElementById('board').classList.add('disabled');
   updateStatus('AI 思考中...', 'thinking');
   turnNumber++;
 
-  const coords = currentMoves.map(m => [m.x, m.y]);
-  currentMoves = [];
-
   try {
-    const resp = await fetch(`${API}/play`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ moves: coords })
-    });
+    const resp = await fetch(`${API}/ai_turn`, { method: 'POST' });
     const data = await resp.json();
 
     if (data.error) {
-      // Sync board from engine to recover consistent state
+      updateStatus('AI 错误: ' + data.error, 'error');
       if (data.board) syncBoard(data.board);
-      updateStatus('错误: ' + data.error, 'error');
       myTurn = true;
       document.getElementById('board').classList.remove('disabled');
       return;
     }
 
     syncBoard(data.board);
-    logMoves(turnNumber, coords, data.ai_moves);
+    logMoves(turnNumber, blackCoords, data.ai_moves);
     myTurn = true;
     document.getElementById('board').classList.remove('disabled');
     updateStatus();
   } catch (e) {
-    updateStatus('连接失败，请确认后端已启动', 'error');
+    updateStatus('连接失败', 'error');
     console.error(e);
-    // Undo the visual stones since they weren't sent to engine
-    for (const [x, y] of coords) {
-      board.removeObjectsAt(x, y);
-    }
     myTurn = true;
     document.getElementById('board').classList.remove('disabled');
   }

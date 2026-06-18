@@ -14,8 +14,9 @@ BOARD_SIZE = 9
 GTP_COLS = "ABCDEFGHJKLMNOPQRST"  # GTP skips 'I'
 
 
-class PlayRequest(BaseModel):
-    moves: list[list[int]]  # [[x, y], ...]
+class PlaceRequest(BaseModel):
+    x: int
+    y: int
 
 
 class Engine:
@@ -58,7 +59,6 @@ class Engine:
         return resp.lstrip("= ").strip()
 
     def _try_send(self, cmd: str) -> tuple[bool, str]:
-        """Send command, return (success, response) without raising."""
         try:
             return True, self._send(cmd)
         except RuntimeError as e:
@@ -82,6 +82,7 @@ class Engine:
         return (col, BOARD_SIZE - row)
 
     def get_board_state(self) -> dict[str, list[list[int]]]:
+        import re
         resp = self._send("showboard")
         black, white = [], []
         for line in resp.split("\n"):
@@ -91,11 +92,13 @@ class Engine:
             parts = line.split()
             row_num = int(parts[0])
             y = BOARD_SIZE - row_num
-            for col_idx, ch in enumerate(parts[1:]):
-                ch = ch.rstrip("0123456789")
-                if ch == "X":
+            # Rejoin and split by known cell patterns to handle "X1." gluing
+            row_str = " ".join(parts[1:])
+            cells = re.findall(r'[XO]\d*|\.', row_str)
+            for col_idx, cell in enumerate(cells):
+                if cell.startswith("X"):
                     black.append([col_idx, y])
-                elif ch == "O":
+                elif cell.startswith("O"):
                     white.append([col_idx, y])
         return {"black": black, "white": white}
 
@@ -119,32 +122,44 @@ def startup():
         print("Install KataGo first: brew install katago")
 
 
-@app.post("/play")
-def play(req: PlayRequest):
+@app.post("/place")
+def place_stone(req: PlaceRequest):
+    """Place a single black stone and return updated board state."""
     if not engine.proc or engine.proc.poll() is not None:
-        return {"error": "Engine not running. Install KataGo and restart."}
-
+        return {"error": "Engine not running."}
     try:
-        # 1. Play all human (black) stones, undo all on failure
-        played = 0
-        for x, y in req.moves:
-            if not engine.play("black", x, y):
-                for _ in range(played):
-                    engine.undo()
-                return {
-                    "error": f"非法落子 ({x},{y})",
-                    "board": engine.get_board_state(),
-                }
-            played += 1
+        if not engine.play("black", req.x, req.y):
+            return {"error": f"非法落子 ({req.x},{req.y})", "board": engine.get_board_state()}
+        return {"ok": True, "board": engine.get_board_state()}
+    except Exception as e:
+        try:
+            board = engine.get_board_state()
+        except Exception:
+            board = None
+        return {"error": str(e), "board": board}
 
-        # 2. Generate 5 AI (white) moves using pass trick
+
+@app.post("/ai_turn")
+def ai_turn():
+    """Generate 5 AI (white) moves using pass trick. Retries on pass/resign."""
+    if not engine.proc or engine.proc.poll() is not None:
+        return {"error": "Engine not running."}
+    try:
         ai_moves = []
-        for i in range(5):
+        max_attempts = 12
+        attempts = 0
+        while len(ai_moves) < 5 and attempts < max_attempts:
             move = engine.genmove("white")
+            attempts += 1
             if move is None:
-                break
+                # AI passed or resigned — undo and feed black pass to retry
+                engine.undo()
+                if len(ai_moves) < 5:
+                    engine.play_pass("white")
+                    engine.play_pass("black")
+                continue
             ai_moves.append(list(move))
-            if i < 4:
+            if len(ai_moves) < 5:
                 engine.play_pass("black")
 
         return {
@@ -157,6 +172,15 @@ def play(req: PlayRequest):
         except Exception:
             board = None
         return {"error": str(e), "board": board}
+
+
+@app.post("/undo")
+def undo_move():
+    try:
+        engine.undo()
+        return {"ok": True, "board": engine.get_board_state()}
+    except Exception as e:
+        return {"error": str(e)}
 
 
 @app.post("/reset")
