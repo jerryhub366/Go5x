@@ -21,53 +21,135 @@ button:hover { background: #eee; }
 button:disabled { opacity: 0.4; cursor: default; }
 button:disabled:hover { background: #fff; }
 #move-log { margin-top: 16px; max-width: 600px; font-size: 13px; color: #666; max-height: 120px; overflow-y: auto; }
+
+#settings { margin: 16px 0; padding: 20px; background: #fff; border-radius: 8px; border: 1px solid #ccc; max-width: 400px; width: 100%; }
+#settings h2 { font-size: 18px; margin-bottom: 12px; text-align: center; }
+.setting-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+.setting-row label { font-size: 15px; color: #333; }
+.setting-row select { padding: 6px 12px; font-size: 15px; border: 1px solid #999; border-radius: 4px; }
+#btn-start { width: 100%; padding: 12px; font-size: 18px; font-weight: bold; background: #333; color: #fff; border: none; border-radius: 6px; cursor: pointer; }
+#btn-start:hover { background: #555; }
 </style>
 </head>
 <body>
 <h1>Go5x</h1>
-<div id="status">请落子: 0 / 5</div>
-<div id="board"></div>
-<div id="controls">
-  <button id="btn-end-turn" onclick="endTurnEarly()" disabled>提前结束本轮</button>
-  <button id="btn-undo" onclick="undoLast()">撤回上一子</button>
-  <button id="btn-score" onclick="endAndScore()">结束并计分</button>
-  <button onclick="resetGame()">重新开始</button>
+
+<div id="settings">
+  <h2>游戏设置</h2>
+  <div class="setting-row">
+    <label>棋盘大小</label>
+    <select id="sel-size">
+      <option value="9" selected>9 × 9</option>
+      <option value="13">13 × 13</option>
+      <option value="19">19 × 19</option>
+    </select>
+  </div>
+  <div class="setting-row">
+    <label>AI 难度</label>
+    <select id="sel-difficulty">
+      <option value="5">入门</option>
+      <option value="50" selected>简单</option>
+      <option value="200">中等</option>
+      <option value="1000">困难</option>
+    </select>
+  </div>
+  <div class="setting-row">
+    <label>先手</label>
+    <select id="sel-first">
+      <option value="white" selected>白棋 (AI) 先手</option>
+      <option value="black">黑棋 (玩家) 先手</option>
+    </select>
+  </div>
+  <button id="btn-start" onclick="startGame()">开始游戏</button>
 </div>
-<div id="move-log"></div>
+
+<div id="game-area" style="display:none;">
+  <div id="status">请落子: 0 / 5</div>
+  <div id="board"></div>
+  <div id="controls">
+    <button id="btn-end-turn" onclick="endTurnEarly()" disabled>提前结束本轮</button>
+    <button id="btn-undo" onclick="undoLast()">撤回上一子</button>
+    <button id="btn-score" onclick="endAndScore()">结束并计分</button>
+    <button onclick="resetGame()">重新开始</button>
+  </div>
+  <div id="move-log"></div>
+</div>
 
 <script>
 const STONES_PER_TURN = 5;
-const BOARD_SIZE = 9;
 const API = location.origin;
 
+let boardSize = 9;
 let board, currentMoves = [], gameActive = true, myTurn = true, turnNumber = 0;
 let placing = false;
 let lastBlackMoves = [];
 let lastWhiteMoves = [];
+let blackFirst = false;
 
-async function init() {
+async function startGame() {
+  boardSize = parseInt(document.getElementById('sel-size').value);
+  const maxVisits = parseInt(document.getElementById('sel-difficulty').value);
+  blackFirst = document.getElementById('sel-first').value === 'black';
+
+  document.getElementById('btn-start').disabled = true;
+  document.getElementById('btn-start').textContent = '配置中...';
+
+  try {
+    const resp = await fetch(`${API}/configure`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ board_size: boardSize, max_visits: maxVisits })
+    });
+    const data = await resp.json();
+    if (data.error) {
+      alert('配置失败: ' + data.error);
+      document.getElementById('btn-start').disabled = false;
+      document.getElementById('btn-start').textContent = '开始游戏';
+      return;
+    }
+  } catch (e) {
+    alert('连接失败，请确认后端已启动');
+    document.getElementById('btn-start').disabled = false;
+    document.getElementById('btn-start').textContent = '开始游戏';
+    return;
+  }
+
+  document.getElementById('settings').style.display = 'none';
+  document.getElementById('game-area').style.display = '';
+  initBoard();
+}
+
+function initBoard() {
   document.getElementById('board').innerHTML = '';
+  const maxWidth = boardSize >= 19 ? 680 : (boardSize >= 13 ? 620 : 560);
   board = new WGo.Board(document.getElementById('board'), {
-    size: BOARD_SIZE,
-    width: Math.min(560, window.innerWidth - 40)
+    size: boardSize,
+    width: Math.min(maxWidth, window.innerWidth - 40)
   });
   board.addEventListener('click', onBoardClick);
   currentMoves = [];
   lastBlackMoves = [];
   lastWhiteMoves = [];
   gameActive = true;
-  myTurn = false;
   turnNumber = 0;
   placing = false;
-  updateButtons();
-  updateStatus();
-  try { await fetch(`${API}/reset`, { method: 'POST' }); } catch(e) {}
-  requestAiTurn();
+  document.getElementById('move-log').innerHTML = '';
+
+  if (blackFirst) {
+    myTurn = true;
+    updateButtons();
+    updateStatus();
+  } else {
+    myTurn = false;
+    updateButtons();
+    updateStatus();
+    requestAiTurn();
+  }
 }
 
 function onBoardClick(x, y) {
   if (!gameActive || !myTurn || placing) return;
-  if (x < 0 || x >= BOARD_SIZE || y < 0 || y >= BOARD_SIZE) return;
+  if (x < 0 || x >= boardSize || y < 0 || y >= boardSize) return;
   if (currentMoves.some(m => m.x === x && m.y === y)) return;
   if (board.obj_arr[x][y].some(o => o.c === WGo.B || o.c === WGo.W)) return;
   handlePlace(x, y);
@@ -331,16 +413,11 @@ function logMessage(msg) {
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-async function resetGame() {
-  try { await fetch(`${API}/reset`, { method: 'POST' }); } catch(e) {}
-  document.getElementById('move-log').innerHTML = '';
-  init();
-}
-
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', init);
-} else {
-  init();
+function resetGame() {
+  document.getElementById('game-area').style.display = 'none';
+  document.getElementById('settings').style.display = '';
+  document.getElementById('btn-start').disabled = false;
+  document.getElementById('btn-start').textContent = '开始游戏';
 }
 </script>
 </body>

@@ -10,7 +10,6 @@ from pydantic import BaseModel
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-BOARD_SIZE = 9
 GTP_COLS = "ABCDEFGHJKLMNOPQRST"  # GTP skips 'I'
 
 
@@ -19,9 +18,15 @@ class PlaceRequest(BaseModel):
     y: int
 
 
+class ConfigRequest(BaseModel):
+    board_size: int = 9
+    max_visits: int = 50
+
+
 class Engine:
     def __init__(self):
         self.proc = None
+        self.board_size = 9
 
     def start(self):
         katago = os.environ.get("KATAGO_PATH", "katago")
@@ -38,7 +43,7 @@ class Engine:
             cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, text=True, bufsize=1,
         )
-        self._send("boardsize %d" % BOARD_SIZE)
+        self._send("boardsize %d" % self.board_size)
         self._send("komi 7.5")
         self._send("clear_board")
 
@@ -47,8 +52,6 @@ class Engine:
             raise RuntimeError("Engine not running")
         self.proc.stdin.write(cmd + "\n")
         self.proc.stdin.flush()
-        # GTP responses end with two consecutive newlines (blank line after content).
-        # Read until we see a blank line AFTER the "= " or "? " response header.
         lines = []
         saw_header = False
         while True:
@@ -75,9 +78,16 @@ class Engine:
         except RuntimeError as e:
             return False, str(e)
 
+    def configure(self, board_size: int, max_visits: int):
+        self.board_size = board_size
+        self._send("boardsize %d" % board_size)
+        self._send("komi 7.5")
+        self._send("clear_board")
+        self._try_send("kata-set-param maxVisits %d" % max_visits)
+
     def play(self, color: str, x: int, y: int) -> bool:
         col = GTP_COLS[x]
-        row = BOARD_SIZE - y
+        row = self.board_size - y
         ok, _ = self._try_send(f"play {color} {col}{row}")
         return ok
 
@@ -90,7 +100,7 @@ class Engine:
             return None
         col = GTP_COLS.index(resp[0].upper())
         row = int(resp[1:])
-        return (col, BOARD_SIZE - row)
+        return (col, self.board_size - row)
 
     def get_board_state(self) -> dict[str, list[list[int]]]:
         import re
@@ -102,8 +112,7 @@ class Engine:
                 continue
             parts = line.split()
             row_num = int(parts[0])
-            y = BOARD_SIZE - row_num
-            # Rejoin and split by known cell patterns to handle "X1." gluing
+            y = self.board_size - row_num
             row_str = " ".join(parts[1:])
             cells = re.findall(r'[XO]\d*|\.', row_str)
             for col_idx, cell in enumerate(cells):
@@ -136,9 +145,19 @@ def startup():
         print("Install KataGo first: brew install katago")
 
 
+@app.post("/configure")
+def configure(req: ConfigRequest):
+    if not engine.proc or engine.proc.poll() is not None:
+        return {"error": "Engine not running."}
+    try:
+        engine.configure(req.board_size, req.max_visits)
+        return {"ok": True, "board_size": req.board_size, "max_visits": req.max_visits}
+    except Exception as e:
+        return {"error": str(e)}
+
+
 @app.post("/place")
 def place_stone(req: PlaceRequest):
-    """Place a single black stone and return updated board state."""
     if not engine.proc or engine.proc.poll() is not None:
         return {"error": "Engine not running."}
     try:
@@ -155,7 +174,6 @@ def place_stone(req: PlaceRequest):
 
 @app.post("/ai_turn")
 def ai_turn():
-    """Generate 5 AI (white) moves using pass trick. Retries on pass/resign."""
     if not engine.proc or engine.proc.poll() is not None:
         return {"error": "Engine not running."}
     try:
@@ -166,7 +184,6 @@ def ai_turn():
             move = engine.genmove("white")
             attempts += 1
             if move is None:
-                # AI passed or resigned — undo and feed black pass to retry
                 engine.undo()
                 if len(ai_moves) < 5:
                     engine.play_pass("white")
