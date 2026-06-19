@@ -119,6 +119,9 @@ class Engine:
     def reset(self):
         self._send("clear_board")
 
+    def final_score(self) -> str:
+        return self._send("final_score")
+
 
 engine = Engine()
 
@@ -190,6 +193,17 @@ def undo_move():
     try:
         engine.undo()
         return {"ok": True, "board": engine.get_board_state()}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.post("/score")
+def score():
+    if not engine.proc or engine.proc.poll() is not None:
+        return {"error": "Engine not running."}
+    try:
+        result = engine.final_score()
+        return {"score": result, "board": engine.get_board_state()}
     except Exception as e:
         return {"error": str(e)}
 

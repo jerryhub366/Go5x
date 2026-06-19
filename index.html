@@ -12,11 +12,14 @@ h1 { margin-bottom: 8px; color: #333; }
 #status { font-size: 20px; font-weight: bold; margin: 12px 0; padding: 8px 24px; border-radius: 6px; background: #fff; border: 2px solid #333; min-width: 260px; text-align: center; }
 #status.thinking { background: #fff3cd; border-color: #ffc107; }
 #status.error { background: #f8d7da; border-color: #dc3545; }
+#status.result { background: #d4edda; border-color: #28a745; font-size: 22px; }
 #board { cursor: pointer; }
 #board.disabled { pointer-events: none; opacity: 0.7; }
-#controls { margin-top: 12px; display: flex; gap: 10px; }
+#controls { margin-top: 12px; display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
 button { padding: 8px 20px; font-size: 16px; cursor: pointer; border: 1px solid #999; border-radius: 4px; background: #fff; }
 button:hover { background: #eee; }
+button:disabled { opacity: 0.4; cursor: default; }
+button:disabled:hover { background: #fff; }
 #move-log { margin-top: 16px; max-width: 600px; font-size: 13px; color: #666; max-height: 120px; overflow-y: auto; }
 </style>
 </head>
@@ -25,7 +28,9 @@ button:hover { background: #eee; }
 <div id="status">请落子: 0 / 5</div>
 <div id="board"></div>
 <div id="controls">
-  <button onclick="undoLast()">撤回上一子</button>
+  <button id="btn-end-turn" onclick="endTurnEarly()" disabled>提前结束本轮</button>
+  <button id="btn-undo" onclick="undoLast()">撤回上一子</button>
+  <button id="btn-score" onclick="endAndScore()">结束并计分</button>
   <button onclick="resetGame()">重新开始</button>
 </div>
 <div id="move-log"></div>
@@ -37,9 +42,8 @@ const API = location.origin;
 
 let board, currentMoves = [], gameActive = true, myTurn = true, turnNumber = 0;
 let placing = false;
-// Track last turn's moves for showing order labels
-let lastBlackMoves = []; // [{x,y}, ...]
-let lastWhiteMoves = []; // [{x,y}, ...]
+let lastBlackMoves = [];
+let lastWhiteMoves = [];
 
 async function init() {
   document.getElementById('board').innerHTML = '';
@@ -55,6 +59,7 @@ async function init() {
   myTurn = false;
   turnNumber = 0;
   placing = false;
+  updateButtons();
   updateStatus();
   try { await fetch(`${API}/reset`, { method: 'POST' }); } catch(e) {}
   requestAiTurn();
@@ -70,8 +75,8 @@ function onBoardClick(x, y) {
 
 async function handlePlace(x, y) {
   placing = true;
+  updateButtons();
 
-  // On first black stone of a new turn, clear white order labels
   if (currentMoves.length === 0) {
     clearOrderLabels();
   }
@@ -90,6 +95,7 @@ async function handlePlace(x, y) {
       reapplyBlackLabels();
       setTimeout(() => { if (myTurn) updateStatus(); }, 1500);
       placing = false;
+      updateButtons();
       return;
     }
 
@@ -99,18 +105,73 @@ async function handlePlace(x, y) {
     updateStatus();
 
     if (currentMoves.length === STONES_PER_TURN) {
+      placing = false;
+      updateButtons();
       await requestAiTurn();
+      return;
     }
   } catch (e) {
     updateStatus('连接失败，请确认后端已启动', 'error');
     console.error(e);
   }
   placing = false;
+  updateButtons();
+}
+
+async function endTurnEarly() {
+  if (!myTurn || currentMoves.length === 0 || placing || !gameActive) return;
+  await requestAiTurn();
+}
+
+async function endAndScore() {
+  if (!gameActive || placing) return;
+  gameActive = false;
+  myTurn = false;
+  document.getElementById('board').classList.add('disabled');
+  updateStatus('计分中...', 'thinking');
+  updateButtons();
+
+  try {
+    const resp = await fetch(`${API}/score`, { method: 'POST' });
+    const data = await resp.json();
+
+    if (data.error) {
+      updateStatus('计分失败: ' + data.error, 'error');
+      gameActive = true;
+      myTurn = true;
+      document.getElementById('board').classList.remove('disabled');
+      updateButtons();
+      return;
+    }
+
+    if (data.board) syncBoard(data.board);
+    clearOrderLabels();
+
+    const score = data.score;
+    let msg;
+    if (score.startsWith('B+')) {
+      msg = `黑胜 ${score.slice(2)} 目`;
+    } else if (score.startsWith('W+')) {
+      msg = `白胜 ${score.slice(2)} 目`;
+    } else {
+      msg = score;
+    }
+    updateStatus(`终局: ${msg}`, 'result');
+    logMessage(`--- 终局: ${msg} ---`);
+  } catch (e) {
+    updateStatus('连接失败', 'error');
+    gameActive = true;
+    myTurn = true;
+    document.getElementById('board').classList.remove('disabled');
+    console.error(e);
+  }
+  updateButtons();
 }
 
 function undoLast() {
   if (!myTurn || currentMoves.length === 0 || placing) return;
   placing = true;
+  updateButtons();
   const last = currentMoves.pop();
   fetch(`${API}/undo`, { method: 'POST' })
     .then(r => r.json())
@@ -118,7 +179,6 @@ function undoLast() {
       if (data.board) syncBoard(data.board);
       else board.removeObjectsAt(last.x, last.y);
       reapplyBlackLabels();
-      // If all undone, show white labels again
       if (currentMoves.length === 0) reapplyWhiteLabels();
       updateStatus();
     })
@@ -128,7 +188,14 @@ function undoLast() {
       if (currentMoves.length === 0) reapplyWhiteLabels();
       updateStatus();
     })
-    .finally(() => { placing = false; });
+    .finally(() => { placing = false; updateButtons(); });
+}
+
+function updateButtons() {
+  const canEndTurn = gameActive && myTurn && currentMoves.length > 0 && !placing;
+  document.getElementById('btn-end-turn').disabled = !canEndTurn;
+  document.getElementById('btn-undo').disabled = !(myTurn && currentMoves.length > 0 && !placing);
+  document.getElementById('btn-score').disabled = !gameActive || placing;
 }
 
 function updateStatus(msg, type) {
@@ -150,6 +217,7 @@ async function requestAiTurn() {
   myTurn = false;
   document.getElementById('board').classList.add('disabled');
   updateStatus('AI 思考中...', 'thinking');
+  updateButtons();
   turnNumber++;
 
   try {
@@ -161,28 +229,29 @@ async function requestAiTurn() {
       if (data.board) syncBoard(data.board);
       myTurn = true;
       document.getElementById('board').classList.remove('disabled');
+      updateButtons();
       return;
     }
 
     lastWhiteMoves = data.ai_moves.map(([x,y]) => ({x, y}));
 
-    // Animate AI moves one by one
     await animateAiMoves(data.ai_moves, data.board);
 
     logMoves(turnNumber, blackCoords, data.ai_moves);
     myTurn = true;
     document.getElementById('board').classList.remove('disabled');
     updateStatus();
+    updateButtons();
   } catch (e) {
     updateStatus('连接失败', 'error');
     console.error(e);
     myTurn = true;
     document.getElementById('board').classList.remove('disabled');
+    updateButtons();
   }
 }
 
 async function animateAiMoves(aiMoves, finalBoard) {
-  // Clear black order labels before showing AI moves
   clearOrderLabels();
 
   for (let i = 0; i < aiMoves.length; i++) {
@@ -190,12 +259,11 @@ async function animateAiMoves(aiMoves, finalBoard) {
     await sleep(500);
     board.addObject({ x, y, c: WGo.W });
     board.addObject({ x, y, type: "LB", text: String(i + 1) });
-    updateStatus(`AI 落子: ${i + 1} / ${STONES_PER_TURN}`, 'thinking');
+    updateStatus(`AI 落子: ${i + 1} / ${aiMoves.length}`, 'thinking');
   }
 
   await sleep(600);
 
-  // Final sync to ensure captures are correct
   syncBoard(finalBoard);
   reapplyWhiteLabels();
 }
@@ -252,7 +320,13 @@ function syncBoard(state) {
 function logMoves(turn, black, white) {
   const el = document.getElementById('move-log');
   const fmt = coords => coords.map(([x,y]) => `(${x},${y})`).join(' ');
-  el.innerHTML = `<div>第${turn}回合 黑: ${fmt(black)} | 白: ${fmt(white)}</div>` + el.innerHTML;
+  const bStr = black.length ? fmt(black) : '(无)';
+  el.innerHTML = `<div>第${turn}回合 黑: ${bStr} | 白: ${fmt(white)}</div>` + el.innerHTML;
+}
+
+function logMessage(msg) {
+  const el = document.getElementById('move-log');
+  el.innerHTML = `<div><b>${msg}</b></div>` + el.innerHTML;
 }
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
