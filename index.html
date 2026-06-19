@@ -52,10 +52,12 @@ function init() {
   lastBlackMoves = [];
   lastWhiteMoves = [];
   gameActive = true;
-  myTurn = true;
+  myTurn = false;
   turnNumber = 0;
   placing = false;
   updateStatus();
+  // White goes first
+  requestAiTurn();
 }
 
 function onBoardClick(x, y) {

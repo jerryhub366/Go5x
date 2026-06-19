@@ -47,12 +47,23 @@ class Engine:
             raise RuntimeError("Engine not running")
         self.proc.stdin.write(cmd + "\n")
         self.proc.stdin.flush()
+        # GTP responses end with two consecutive newlines (blank line after content).
+        # Read until we see a blank line AFTER the "= " or "? " response header.
         lines = []
+        saw_header = False
         while True:
             line = self.proc.stdout.readline()
-            if line.strip() == "" and lines:
+            if not line:
                 break
-            lines.append(line.strip())
+            stripped = line.rstrip("\n\r")
+            if not saw_header:
+                if stripped.startswith("= ") or stripped.startswith("=\n") or stripped == "=" or stripped.startswith("?"):
+                    saw_header = True
+                    lines.append(stripped)
+                continue
+            if stripped == "":
+                break
+            lines.append(stripped)
         resp = "\n".join(lines)
         if resp.startswith("?"):
             raise RuntimeError(f"GTP error: {resp}")
@@ -75,7 +86,7 @@ class Engine:
 
     def genmove(self, color: str) -> tuple[int, int] | None:
         resp = self._send(f"genmove {color}")
-        if resp.lower() in ("pass", "resign"):
+        if not resp or resp.lower() in ("pass", "resign"):
             return None
         col = GTP_COLS.index(resp[0].upper())
         row = int(resp[1:])
