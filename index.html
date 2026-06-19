@@ -41,7 +41,7 @@ let placing = false;
 let lastBlackMoves = []; // [{x,y}, ...]
 let lastWhiteMoves = []; // [{x,y}, ...]
 
-function init() {
+async function init() {
   document.getElementById('board').innerHTML = '';
   board = new WGo.Board(document.getElementById('board'), {
     size: BOARD_SIZE,
@@ -56,7 +56,7 @@ function init() {
   turnNumber = 0;
   placing = false;
   updateStatus();
-  // White goes first
+  try { await fetch(`${API}/reset`, { method: 'POST' }); } catch(e) {}
   requestAiTurn();
 }
 
